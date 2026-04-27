@@ -1,3 +1,3 @@
-module github.com/clugg/traefik-enforce-header-case-plugin
+module github.com/swtch-energy/traefik-enforce-header-case-plugin
 
 go 1.19

@@ -1,6 +1,6 @@
 # Traefik Enforce Header Case Plugin
 
-![Build Status](https://github.com/clugg/traefik-enforce-header-case-plugin/workflows/Main/badge.svg) [![Latest Release](https://img.shields.io/github/v/release/clugg/traefik-enforce-header-case-plugin?include_prereleases&sort=semver)](https://github.com/clugg/traefik-enforce-header-case-plugin/releases)
+![Build Status](https://github.com/swtch-energy/traefik-enforce-header-case-plugin/workflows/Main/badge.svg) [![Latest Release](https://img.shields.io/github/v/release/swtch-energy/traefik-enforce-header-case-plugin?include_prereleases&sort=semver)](https://github.com/swtch-energy/traefik-enforce-header-case-plugin/releases)
 
 A [Traefik](https://traefik.io/) middleware plugin which enforces the case of specified request and response headers.
 
@@ -14,8 +14,8 @@ This overrides Go (and, by extension, Traefik)'s default behaviour of [canonical
 experimental:
   plugins:
     enforceHeaderCase:
-      moduleName: github.com/clugg/traefik-enforce-header-case-plugin
-      version: v0.1.0
+      moduleName: github.com/swtch-energy/traefik-enforce-header-case-plugin
+      version: v0.1.1
 ```
 
 ### Dynamic
