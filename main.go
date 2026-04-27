@@ -11,6 +11,10 @@ import (
 
 // Config plugin configuration.
 type Config struct {
+	// Headers lists the exact header name spelling you want (key casing only).
+	// Only headers that are already present are rewritten. Example: browsers send
+	// sec-websocket-key, while Go storage uses Sec-Websocket-Key; to get RFC
+	// spelling "Sec-WebSocket-Key" on the wire, include that exact string here.
 	Headers []string `json:"headers,omitempty"`
 }
 
@@ -37,18 +41,31 @@ func New(ctx context.Context, next http.Handler, config *Config, name string) (h
 	}, nil
 }
 
-// enforceHeaderCase rewrites the keys of the given map so configured names can use
-// non-canonical spelling. The HTTP stack typically canonicalizes header keys; this
-// restores the configured casing.
+// enforceHeaderCase rewrites the keys of the given map to match each entry in keys
+// exactly. Matching is by Go's case-insensitive header rules (textproto
+// canonicalization), not by string equality, so the stored key Sec-Websocket-Key
+// and the wanted key Sec-WebSocket-Key (RFC 6455) are still matched.
+// http.Header.Del is not used to remove the old name: it always deletes the
+// canonical form only, and would not remove a previously set custom-cased key.
 func enforceHeaderCase(h http.Header, keys []string) {
-	for _, key := range keys {
-		canon := textproto.CanonicalMIMEHeaderKey(key)
-		values, ok := h[canon]
-		if !ok {
+	for _, want := range keys {
+		if want == "" {
 			continue
 		}
-		h.Del(key)
-		h[key] = values
+		wantCanon := textproto.CanonicalMIMEHeaderKey(want)
+		var found string
+		for k := range h {
+			if textproto.CanonicalMIMEHeaderKey(k) == wantCanon {
+				found = k
+				break
+			}
+		}
+		if found == "" || found == want {
+			continue
+		}
+		vals := h[found]
+		delete(h, found)
+		h[want] = append([]string(nil), vals...)
 	}
 }
 

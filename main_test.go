@@ -93,6 +93,44 @@ func TestEnforceHeaderCaseWhenHeaderDoesNotExist(t *testing.T) {
 	}
 }
 
+func TestSecWebSocketKey_RFC_Casing(t *testing.T) {
+	// Browsers and RFC 6455 use "Sec-WebSocket-Key" (mid-word capital S in WebSocket). Go
+	// stores the HTTP/1.1 name as "Sec-Websocket-Key" in http.Header. We must re-key
+	// using delete(found), not h.Del (which only removes the canonical name).
+	t.Helper()
+	ctx := context.Background()
+	cfg := traefik_enforce_header_case_plugin.CreateConfig()
+	const wantKey = "Sec-WebSocket-Key"
+	cfg.Headers = []string{wantKey}
+
+	checked := false
+	next := http.HandlerFunc(func(rw http.ResponseWriter, req *http.Request) {
+		checked = true
+		if req.Header == nil {
+			t.Fatal("nil header")
+		}
+		if _, hasGo := req.Header["Sec-Websocket-Key"]; hasGo {
+			t.Error("expected Go's Sec-Websocket-Key to be re-keyed to the configured spelling")
+		}
+		if v, has := req.Header[wantKey]; !has || len(v) != 1 || v[0] == "" {
+			t.Errorf("expected %q with a value, got has=%v, val=%#v", wantKey, has, v)
+		}
+	})
+
+	handler, err := traefik_enforce_header_case_plugin.New(ctx, next, cfg, "p")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	rec, req := prepareRequest(ctx, t)
+	// Triggers the standard Go key used for this header in net/http.
+	req.Header.Set("sec-websocket-key", "d3d3LmV4YW1wbGUuY29t")
+	handler.ServeHTTP(rec, req)
+	if !checked {
+		t.Fatal("next handler not called")
+	}
+}
+
 func TestEnforceHeaderCaseWhenUnconfiguredHeaderExists(t *testing.T) {
 	ctx, _, handler := preparePlugin(t)
 	recorder, req := prepareRequest(ctx, t)
