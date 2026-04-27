@@ -1,4 +1,10 @@
-// Package traefik_enforce_header_case_plugin A Traefik middleware plugin which enforces the case of specified request and response headers.
+// Package traefik_enforce_header_case_plugin is a Traefik middleware plugin that rewrites
+// the spelling of specific header names in request and response header maps
+// (e.g. Sec-Websocket-Key → Sec-WebSocket-Key) for the next step inside Traefik.
+//
+// A Go *http.Request on the backend re-canonicalizes header names on parse, so
+// the map key there is still Go’s form (e.g. Sec-Websocket-Key). See the README
+// section “Why the backend can still look wrong”.
 package traefik_enforce_header_case_plugin
 
 import (

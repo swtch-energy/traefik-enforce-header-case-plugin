@@ -8,7 +8,17 @@ This overrides Go (and, by extension, Traefik)'s default behaviour of [canonical
 
 **What it does not do:** it only **re-spells the header name** (key) for headers that are **already present**. It does **not** add or inject a header. If the client does not send a request header, or the origin does not set a response header, the plugin has nothing to rename. To *create* a header, use Traefik’s built-in [headers](https://doc.traefik.io/traefik/middlewares/http/headers/) middleware (or your app) and, if you need a non-canonical name, place this plugin **after** the one that sets the value (order matters in the `middlewares` chain).
 
-**`Sec-WebSocket-Key` (WebSocket):** Browsers and [RFC 6455](https://www.rfc-editor.org/rfc/rfc6455#section-11.3) use the spelling `Sec-WebSocket-Key` (capital **S** in the middle of “WebSocket”). Go’s `http.Header` instead uses `Sec-Websocket-Key` (only the first letter of the last segment is capitalized). Put the exact name you need for the next hop in `headers` (e.g. `Sec-WebSocket-Key`); the plugin re-keys the map entry from Go’s form to that spelling. If the problem persists on the **backend** after that, the reverse proxy may be re-canonicalising again when it reproduces the request; that is outside this middleware’s control.
+**`Sec-WebSocket-Key` (WebSocket):** Browsers and [RFC 6455](https://www.rfc-editor.org/rfc/rfc6455#section-11.3) use the spelling `Sec-WebSocket-Key` (capital **S** in the middle of “WebSocket”). Go’s `http.Header` instead uses `Sec-Websocket-Key` (only the first letter of the last segment is capitalized). Put the exact name you need for the next hop in `headers` (e.g. `Sec-WebSocket-Key`); the plugin re-keys the map entry from Go’s form to that spelling.
+
+## Why the backend can still look “wrong” (especially with Go)
+
+This plugin only changes the `http.Header` map **inside Traefik** before the next handler runs. It cannot change how your **application runtime** stores header names after it reads the bytes off the socket.
+
+- **If the backend is Go** (`net/http` server): when the request is parsed, the server’s MIME header reader ([`readMIMEHeader`](https://go.dev/src/net/textproto/reader.go)) always runs the header **name** through the same canonicalization rules and uses that as the **map key**. So in `*http.Request`, the key is **always** Go’s canonical form (e.g. `Sec-Websocket-Key`), even if the bytes on the wire used `Sec-WebSocket-Key`. You should use `Header.Get("Sec-WebSocket-Key")` / `Get("sec-websocket-key")` for the value—lookup is case-insensitive. You **cannot** obtain RFC-exact header **name** spelling from `r.Header`’s keys in the standard library.
+
+- **If the backend is not Go** and truly needs exact **name** bytes: confirm with a raw TCP/MITM capture; some stacks mirror Go’s behavior.
+
+- **Traefik’s oxy** WebSocket path copies headers with the same string keys as the in-memory map ([`CopyHeaders`](https://github.com/vulcand/oxy/blob/v1.4.0/utils/netutils.go) assigns `dst[k] = src[k]`), and normal HTTP forwarding uses `Request.Clone`, which `Header.Clone`s key strings. The remaining gap is almost always **re-parsing** on the backend, not this plugin “failing” in Traefik.
 
 ## Traefik plugin catalog and `Unknown plugin` (404)
 
