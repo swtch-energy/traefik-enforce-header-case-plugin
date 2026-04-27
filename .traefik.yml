@@ -4,7 +4,7 @@ iconPath: .assets/icon.png
 
 import: github.com/clugg/traefik-enforce-header-case-plugin
 
-summary: 'Enforces the case of specified request headers.'
+summary: 'Enforces the case of specified request and response headers.'
 
 testData:
   Headers:

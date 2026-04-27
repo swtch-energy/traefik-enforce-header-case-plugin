@@ -1,8 +1,10 @@
-// Package traefik_enforce_header_case_plugin A Traefik middleware plugin which enforces the case of specified request headers.
+// Package traefik_enforce_header_case_plugin A Traefik middleware plugin which enforces the case of specified request and response headers.
 package traefik_enforce_header_case_plugin
 
 import (
+	"bufio"
 	"context"
+	"net"
 	"net/http"
 	"net/textproto"
 )
@@ -35,15 +37,78 @@ func New(ctx context.Context, next http.Handler, config *Config, name string) (h
 	}, nil
 }
 
-func (ehc *TraefikEnforceHeaderCaseMiddleware) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
-	for _, key := range ehc.headers {
-		value, ok := req.Header[textproto.CanonicalMIMEHeaderKey(key)]
-
-		if ok {
-			req.Header.Del(key)
-			req.Header[key] = value
+// enforceHeaderCase rewrites the keys of the given map so configured names can use
+// non-canonical spelling. The HTTP stack typically canonicalizes header keys; this
+// restores the configured casing.
+func enforceHeaderCase(h http.Header, keys []string) {
+	for _, key := range keys {
+		canon := textproto.CanonicalMIMEHeaderKey(key)
+		values, ok := h[canon]
+		if !ok {
+			continue
 		}
+		h.Del(key)
+		h[key] = values
 	}
+}
 
-	ehc.next.ServeHTTP(rw, req)
+type responseCaseWriter struct {
+	http.ResponseWriter
+	headers     []string
+	wroteHeader bool
+}
+
+func (w *responseCaseWriter) WriteHeader(statusCode int) {
+	if !w.wroteHeader {
+		enforceHeaderCase(w.ResponseWriter.Header(), w.headers)
+		w.wroteHeader = true
+	}
+	w.ResponseWriter.WriteHeader(statusCode)
+}
+
+func (w *responseCaseWriter) Write(p []byte) (int, error) {
+	if !w.wroteHeader {
+		w.WriteHeader(http.StatusOK)
+	}
+	return w.ResponseWriter.Write(p)
+}
+
+// Flush is implemented so that optional http.Flusher is preserved on the
+// underlying ResponseWriter, and so headers are rewritten if Flush runs first.
+func (w *responseCaseWriter) Flush() {
+	if !w.wroteHeader {
+		w.WriteHeader(http.StatusOK)
+	}
+	if f, ok := w.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
+}
+
+func (w *responseCaseWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	h, ok := w.ResponseWriter.(http.Hijacker)
+	if !ok {
+		return nil, nil, http.ErrNotSupported
+	}
+	if !w.wroteHeader {
+		enforceHeaderCase(w.ResponseWriter.Header(), w.headers)
+	}
+	return h.Hijack()
+}
+
+func (w *responseCaseWriter) Push(target string, opts *http.PushOptions) error {
+	if p, ok := w.ResponseWriter.(http.Pusher); ok {
+		return p.Push(target, opts)
+	}
+	return http.ErrNotSupported
+}
+
+func (ehc *TraefikEnforceHeaderCaseMiddleware) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
+	enforceHeaderCase(req.Header, ehc.headers)
+	out := &responseCaseWriter{ResponseWriter: rw, headers: ehc.headers}
+	ehc.next.ServeHTTP(out, req)
+	// If the downstream never called Write, WriteHeader, or Flush, headers were never enforced.
+	// (That can happen, for example, with a handler that only sets response headers and returns.)
+	if !out.wroteHeader {
+		enforceHeaderCase(out.ResponseWriter.Header(), ehc.headers)
+	}
 }

@@ -26,6 +26,25 @@ func preparePlugin(t *testing.T) (context.Context, *traefik_enforce_header_case_
 	return ctx, cfg, handler
 }
 
+func prepareResponsePlugin(t *testing.T) (context.Context, *traefik_enforce_header_case_plugin.Config, http.Handler) {
+	t.Helper()
+
+	ctx := context.Background()
+	cfg := traefik_enforce_header_case_plugin.CreateConfig()
+	cfg.Headers = append(cfg.Headers, "x-tEsT-hEAder")
+	next := http.HandlerFunc(func(rw http.ResponseWriter, _ *http.Request) {
+		rw.Header().Set("x-test-header", "456")
+		rw.WriteHeader(http.StatusCreated)
+		_, _ = rw.Write([]byte("ok"))
+	})
+	handler, err := traefik_enforce_header_case_plugin.New(ctx, next, cfg, "traefik-enforce-header-case-plugin")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	return ctx, cfg, handler
+}
+
 func prepareRequest(ctx context.Context, t *testing.T) (*httptest.ResponseRecorder, *http.Request) {
 	t.Helper()
 
@@ -84,5 +103,42 @@ func TestEnforceHeaderCaseWhenUnconfiguredHeaderExists(t *testing.T) {
 	canonicalHeaderValue := req.Header.Get("x-test-header-copy")
 	if canonicalHeaderValue != "123" {
 		t.Errorf("unexpected value for unconfigured header: %s", canonicalHeaderValue)
+	}
+}
+
+func TestEnforceResponseHeaderCaseWhenHeaderExists(t *testing.T) {
+	ctx, cfg, handler := prepareResponsePlugin(t)
+	recorder, req := prepareRequest(ctx, t)
+
+	handler.ServeHTTP(recorder, req)
+	res := recorder.Result()
+	defer res.Body.Close()
+
+	_, hasCanon := res.Header[http.CanonicalHeaderKey(cfg.Headers[0])]
+	if hasCanon {
+		t.Errorf("did not want canonical key for response header %q in map: %#v", cfg.Headers[0], res.Header)
+	}
+
+	vs, ok := res.Header[cfg.Headers[0]]
+	if !ok || len(vs) != 1 || vs[0] != "456" {
+		t.Errorf("unexpected response header %q: %#v", cfg.Headers[0], res.Header[cfg.Headers[0]])
+	}
+}
+
+func TestEnforceResponseHeaderCaseWhenHeaderDoesNotExist(t *testing.T) {
+	ctx, cfg, _ := preparePlugin(t)
+	next := http.HandlerFunc(func(rw http.ResponseWriter, _ *http.Request) {
+		rw.WriteHeader(http.StatusNoContent)
+	})
+	inner, err := traefik_enforce_header_case_plugin.New(ctx, next, cfg, "traefik-enforce-header-case-plugin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	recorder, req := prepareRequest(ctx, t)
+	inner.ServeHTTP(recorder, req)
+	res := recorder.Result()
+	defer res.Body.Close()
+	if values, present := res.Header[cfg.Headers[0]]; present {
+		t.Errorf("unexpected response header %q: %q", cfg.Headers[0], values)
 	}
 }
