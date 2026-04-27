@@ -8,26 +8,22 @@ import (
 	"net/http"
 )
 
-// Config holds the plugin configuration.
 type Config struct {
 	Headers []string `json:"headers,omitempty"`
 }
 
-// CreateConfig creates the default plugin configuration.
 func CreateConfig() *Config {
 	return &Config{
 		Headers: []string{},
 	}
 }
 
-// ForceCasePlugin holds the necessary components of a Traefik plugin
 type ForceCasePlugin struct {
 	next    http.Handler
 	name    string
 	headers []string
 }
 
-// New instantiates and returns the required components used to handle a HTTP request
 func New(ctx context.Context, next http.Handler, config *Config, name string) (http.Handler, error) {
 	return &ForceCasePlugin{
 		next:    next,
@@ -37,48 +33,45 @@ func New(ctx context.Context, next http.Handler, config *Config, name string) (h
 }
 
 func (p *ForceCasePlugin) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
-	// 1. FIX INCOMING REQUESTS (Client -> Backend)
-	for _, expectedHeader := range p.headers {
-		canonical := http.CanonicalHeaderKey(expectedHeader)
-		if values, exists := req.Header[canonical]; exists {
-			req.Header[expectedHeader] = values
-			if expectedHeader != canonical {
-				delete(req.Header, canonical)
-			}
-		}
-	}
+	// WE DO NOT TOUCH THE REQUEST. Let Traefik handle the backend upgrade normally.
 
-	// 2. INTERCEPT OUTGOING RESPONSES (Backend -> Client)
+	// Wrap the response to catch the handshake reply
 	interceptor := &responseInterceptor{
 		ResponseWriter: rw,
 		headers:        p.headers,
 	}
 
-	// Pass the request forward using our interceptor
 	p.next.ServeHTTP(interceptor, req)
 }
 
-// responseInterceptor wraps http.ResponseWriter to fix casing before it goes to the client
 type responseInterceptor struct {
 	http.ResponseWriter
 	headers []string
 }
 
-// WriteHeader catches the response right before it is sent to the client
+// WriteHeader catches the HTTP 101 Handshake right before it goes to the client
 func (r *responseInterceptor) WriteHeader(statusCode int) {
-	for _, expectedHeader := range r.headers {
-		canonical := http.CanonicalHeaderKey(expectedHeader)
-		if values, exists := r.Header()[canonical]; exists {
-			r.Header()[expectedHeader] = values
-			if expectedHeader != canonical {
-				delete(r.Header(), canonical)
+	// Only trigger our casing logic during the WebSocket handshake
+	if statusCode == http.StatusSwitchingProtocols {
+		for _, expectedHeader := range r.headers {
+			canonical := http.CanonicalHeaderKey(expectedHeader)
+
+			// If Traefik/Backend generated the canonical header...
+			if values, exists := r.Header()[canonical]; exists {
+				// Inject the strict casing directly into the underlying map
+				r.Header()[expectedHeader] = values
+
+				// Delete the canonical version so only the strict one is sent
+				if expectedHeader != canonical {
+					delete(r.Header(), canonical)
+				}
 			}
 		}
 	}
 	r.ResponseWriter.WriteHeader(statusCode)
 }
 
-// Hijack is CRITICAL! Without this, WebSockets will fail instantly in Go.
+// Hijack is required so Traefik can take over the TCP stream AFTER the 101 handshake
 func (r *responseInterceptor) Hijack() (net.Conn, *bufio.ReadWriter, error) {
 	hijacker, ok := r.ResponseWriter.(http.Hijacker)
 	if !ok {
@@ -87,7 +80,6 @@ func (r *responseInterceptor) Hijack() (net.Conn, *bufio.ReadWriter, error) {
 	return hijacker.Hijack()
 }
 
-// Flush ensures streaming responses (like SSE) keep working
 func (r *responseInterceptor) Flush() {
 	if flusher, ok := r.ResponseWriter.(http.Flusher); ok {
 		flusher.Flush()
