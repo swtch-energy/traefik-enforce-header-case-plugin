@@ -135,8 +135,9 @@ func (w *responseCaseWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
 	// only the handshake header block (up to \r\n\r\n) and then pass frames through.
 	wrapped := newHandshakeHeaderConn(conn, w.headers)
 	// Return a ReadWriter that writes to wrapped conn, but keep the original reader.
-	// This preserves framing and avoids scanning payloads.
-	newBrw := bufio.NewReadWriter(brw.Reader, bufio.NewWriter(wrapped))
+	// Use a 1-byte buffer to avoid introducing buffering/flush-related stalls that
+	// can look like "idle" traffic and trigger 60s proxy/LB timeouts.
+	newBrw := bufio.NewReadWriter(brw.Reader, bufio.NewWriterSize(wrapped, 1))
 	return wrapped, newBrw, nil
 }
 
