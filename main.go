@@ -41,16 +41,18 @@ func New(ctx context.Context, next http.Handler, config *Config, name string) (h
 }
 
 func (p *ForceCasePlugin) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
-	enforceHeaderCase(req.Header, p.headers)
+	// For requests, keep Go's canonical header keys so internal code that uses
+	// Header.Get (including WebSocket handshake validation) still works.
+	enforceHeaderCase(req.Header, p.headers, true)
 	out := &responseCaseWriter{ResponseWriter: rw, headers: p.headers}
 	p.next.ServeHTTP(out, req)
 	// If downstream only set headers and returned, ensure those are re-keyed too.
 	if !out.wroteHeader {
-		enforceHeaderCase(out.ResponseWriter.Header(), p.headers)
+		enforceHeaderCase(out.ResponseWriter.Header(), p.headers, false)
 	}
 }
 
-func enforceHeaderCase(hdr http.Header, keys []string) {
+func enforceHeaderCase(hdr http.Header, keys []string, keepCanonical bool) {
 	for _, want := range keys {
 		if want == "" {
 			continue
@@ -67,7 +69,12 @@ func enforceHeaderCase(hdr http.Header, keys []string) {
 			continue
 		}
 		vals := hdr[found]
-		delete(hdr, found)
+		// For responses, we want only the configured spelling on the wire, so we
+		// delete the found key and replace it. For requests, keep canonical keys
+		// so Header.Get continues to work for downstream code.
+		if !keepCanonical {
+			delete(hdr, found)
+		}
 		// Direct map assignment avoids Header.Set canonicalization.
 		hdr[want] = append([]string(nil), vals...)
 	}
@@ -81,7 +88,7 @@ type responseCaseWriter struct {
 
 func (w *responseCaseWriter) WriteHeader(statusCode int) {
 	if !w.wroteHeader {
-		enforceHeaderCase(w.ResponseWriter.Header(), w.headers)
+		enforceHeaderCase(w.ResponseWriter.Header(), w.headers, false)
 		w.wroteHeader = true
 	}
 	w.ResponseWriter.WriteHeader(statusCode)
@@ -101,7 +108,7 @@ func (w *responseCaseWriter) Write(p []byte) (int, error) {
 // writes status 101 during WebSocket upgrade; forcing 200 breaks upgrades.
 func (w *responseCaseWriter) Flush() {
 	if !w.wroteHeader {
-		enforceHeaderCase(w.ResponseWriter.Header(), w.headers)
+		enforceHeaderCase(w.ResponseWriter.Header(), w.headers, false)
 	}
 	if f, ok := w.ResponseWriter.(http.Flusher); ok {
 		f.Flush()
@@ -115,7 +122,7 @@ func (w *responseCaseWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
 		return nil, nil, http.ErrNotSupported
 	}
 	if !w.wroteHeader {
-		enforceHeaderCase(w.ResponseWriter.Header(), w.headers)
+		enforceHeaderCase(w.ResponseWriter.Header(), w.headers, false)
 	}
 	return h.Hijack()
 }

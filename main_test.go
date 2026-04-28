@@ -66,8 +66,9 @@ func TestEnforceHeaderCaseWhenHeaderExists(t *testing.T) {
 	handler.ServeHTTP(recorder, req)
 
 	canonicalHeaderValue := req.Header.Get(cfg.Headers[0])
-	if canonicalHeaderValue != "" {
-		t.Errorf("unexpected value for canonicalised header: %s", canonicalHeaderValue)
+	// Request-side: canonical key must remain for Header.Get compatibility.
+	if canonicalHeaderValue != "123" {
+		t.Errorf("expected canonicalised header Get to still work, got: %q", canonicalHeaderValue)
 	}
 
 	caseEnforcedHeaderValue, ok := req.Header[cfg.Headers[0]]
@@ -100,7 +101,7 @@ func TestSecWebSocketKey_RFC_Casing(t *testing.T) {
 	t.Helper()
 	ctx := context.Background()
 	cfg := traefik_enforce_header_case_plugin.CreateConfig()
-	const wantKey = "Sec-WebSocket-Key"
+	wantKey := "Sec-WebSocket-Key"
 	cfg.Headers = []string{wantKey}
 
 	checked := false
@@ -109,8 +110,9 @@ func TestSecWebSocketKey_RFC_Casing(t *testing.T) {
 		if req.Header == nil {
 			t.Fatal("nil header")
 		}
-		if _, hasGo := req.Header["Sec-Websocket-Key"]; hasGo {
-			t.Error("expected Go's Sec-Websocket-Key to be re-keyed to the configured spelling")
+		// Canonical key must remain for websocket handshakes (Header.Get).
+		if _, hasGo := req.Header["Sec-Websocket-Key"]; !hasGo {
+			t.Error("expected Go's Sec-Websocket-Key to remain for Header.Get compatibility")
 		}
 		if v, has := req.Header[wantKey]; !has || len(v) != 1 || v[0] == "" {
 			t.Errorf("expected %q with a value, got has=%v, val=%#v", wantKey, has, v)
