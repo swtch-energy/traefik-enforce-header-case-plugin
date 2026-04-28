@@ -2,11 +2,10 @@ package traefik_enforce_header_case_plugin
 
 import (
 	"bufio"
-	"bytes"
 	"context"
-	"errors"
 	"net"
 	"net/http"
+	"net/textproto"
 )
 
 // Config holds the configuration from your routes.yml
@@ -15,110 +14,108 @@ type Config struct {
 }
 
 func CreateConfig() *Config {
-	return &Config{}
+	return &Config{
+		Headers: []string{},
+	}
 }
 
 type ForceCasePlugin struct {
-	next         http.Handler
-	name         string
-	searches     [][]byte
-	replacements [][]byte
+	next    http.Handler
+	name    string
+	headers []string
 }
 
-// New runs once when Traefik starts. It pre-computes the search/replace lists.
+// New runs once when Traefik starts.
 func New(ctx context.Context, next http.Handler, config *Config, name string) (http.Handler, error) {
-	var searches, replacements [][]byte
-
-	// Dynamically build the byte replacement list based on your config
-	for _, h := range config.Headers {
-		canonical := http.CanonicalHeaderKey(h)
-		// Only track it if Go's default casing differs from your strict casing
-		if h != canonical {
-			searches = append(searches, []byte(canonical))
-			replacements = append(replacements, []byte(h))
-		}
+	_ = ctx
+	headers := []string(nil)
+	if config != nil {
+		headers = append(headers, config.Headers...)
 	}
 
 	return &ForceCasePlugin{
-		next:         next,
-		name:         name,
-		searches:     searches,
-		replacements: replacements,
+		next:    next,
+		name:    name,
+		headers: headers,
 	}, nil
 }
 
 func (p *ForceCasePlugin) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
-	interceptor := &hijackInterceptor{
-		ResponseWriter: rw,
-		searches:       p.searches,
-		replacements:   p.replacements,
-	}
-	p.next.ServeHTTP(interceptor, req)
-}
-
-type hijackInterceptor struct {
-	http.ResponseWriter
-	searches     [][]byte
-	replacements [][]byte
-}
-
-// Hijack intercepts the TCP stream when Traefik upgrades to WebSockets
-func (r *hijackInterceptor) Hijack() (net.Conn, *bufio.ReadWriter, error) {
-	hijacker, ok := r.ResponseWriter.(http.Hijacker)
-	if !ok {
-		return nil, nil, errors.New("hijack not supported")
-	}
-
-	conn, brw, err := hijacker.Hijack()
-	if err != nil {
-		return conn, brw, err
-	}
-
-	// Wrap the raw connection with our dynamic replacer
-	wrappedConn := &tcpByteReplacer{
-		Conn:         conn,
-		searches:     r.searches,
-		replacements: r.replacements,
-	}
-
-	newWriter := bufio.NewWriter(wrappedConn)
-	newBrw := bufio.NewReadWriter(brw.Reader, newWriter)
-
-	return wrappedConn, newBrw, nil
-}
-
-func (r *hijackInterceptor) Flush() {
-	if flusher, ok := r.ResponseWriter.(http.Flusher); ok {
-		flusher.Flush()
+	enforceHeaderCase(req.Header, p.headers)
+	out := &responseCaseWriter{ResponseWriter: rw, headers: p.headers}
+	p.next.ServeHTTP(out, req)
+	// If downstream only set headers and returned, ensure those are re-keyed too.
+	if !out.wroteHeader {
+		enforceHeaderCase(out.ResponseWriter.Header(), p.headers)
 	}
 }
 
-// tcpByteReplacer inspects raw TCP bytes and replaces all configured headers
-type tcpByteReplacer struct {
-	net.Conn
-	searches     [][]byte
-	replacements [][]byte
-	headersDone  bool
-}
-
-// Write intercepts bytes right before they hit the network card
-func (c *tcpByteReplacer) Write(p []byte) (int, error) {
-	// Only scan the stream during the HTTP handshake phase
-	if !c.headersDone {
-		// Loop through every header in your config
-		for i := range c.searches {
-			if bytes.Contains(p, c.searches[i]) {
-				// Replace the canonical Go header with your strict custom header
-				p = bytes.Replace(p, c.searches[i], c.replacements[i], 1)
+func enforceHeaderCase(hdr http.Header, keys []string) {
+	for _, want := range keys {
+		if want == "" {
+			continue
+		}
+		wantCanon := textproto.CanonicalMIMEHeaderKey(want)
+		var found string
+		for k := range hdr {
+			if textproto.CanonicalMIMEHeaderKey(k) == wantCanon {
+				found = k
+				break
 			}
 		}
+		if found == "" || found == want {
+			continue
+		}
+		vals := hdr[found]
+		delete(hdr, found)
+		// Direct map assignment avoids Header.Set canonicalization.
+		hdr[want] = append([]string(nil), vals...)
+	}
+}
 
-		// Stop scanning the stream once the HTTP headers finish ( \r\n\r\n )
-		if bytes.Contains(p, []byte("\r\n\r\n")) {
-			c.headersDone = true
+type responseCaseWriter struct {
+	http.ResponseWriter
+	headers     []string
+	wroteHeader bool
+}
+
+func (w *responseCaseWriter) WriteHeader(statusCode int) {
+	if !w.wroteHeader {
+		enforceHeaderCase(w.ResponseWriter.Header(), w.headers)
+		w.wroteHeader = true
+	}
+	w.ResponseWriter.WriteHeader(statusCode)
+}
+
+func (w *responseCaseWriter) Write(p []byte) (int, error) {
+	if !w.wroteHeader {
+		// Avoid forcing a 200 here if nothing is written; still safe for normal writes.
+		if len(p) != 0 {
+			w.WriteHeader(http.StatusOK)
 		}
 	}
+	return w.ResponseWriter.Write(p)
+}
 
-	// Pass the modified bytes to the real network connection
-	return c.Conn.Write(p)
+// Flush must not call WriteHeader(200). Traefik can Flush before the upstream
+// writes status 101 during WebSocket upgrade; forcing 200 breaks upgrades.
+func (w *responseCaseWriter) Flush() {
+	if !w.wroteHeader {
+		enforceHeaderCase(w.ResponseWriter.Header(), w.headers)
+	}
+	if f, ok := w.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
+}
+
+// Hijack must be delegated unchanged for WebSocket stability.
+func (w *responseCaseWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	h, ok := w.ResponseWriter.(http.Hijacker)
+	if !ok {
+		return nil, nil, http.ErrNotSupported
+	}
+	if !w.wroteHeader {
+		enforceHeaderCase(w.ResponseWriter.Header(), w.headers)
+	}
+	return h.Hijack()
 }
